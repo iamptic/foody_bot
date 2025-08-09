@@ -1,209 +1,178 @@
 import os
 import asyncio
+import aiosqlite
 from dataclasses import dataclass
 from typing import Optional
 
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
-                           InlineKeyboardButton, InputMediaPhoto)
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Location
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import aiohttp
+from aiohttp import ClientSession
 
-# ========= Настройки через ENV =========
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # обязательно
-BACKEND_API = os.getenv("BACKEND_API", "https://foodyback-production.up.railway.app")
-WEBAPP_BUYER = os.getenv("WEBAPP_BUYER", "https://foody-buyer.vercel.app")
-WEBAPP_REG = os.getenv("WEBAPP_REG", "https://foody-reg.vercel.app")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BACKEND_PUBLIC = os.getenv("BACKEND_PUBLIC", "http://localhost:8000").rstrip("/")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "http://localhost:5173").rstrip("/")
 
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN не задан")
+    raise RuntimeError("❌ BOT_TOKEN is not set. Add it to env.")
 
-# ========= Маркировка callback'ов =========
+DB_PATH = "bot_data.db"
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS restaurants (
+            tg_id INTEGER PRIMARY KEY,
+            name TEXT,
+            lat REAL,
+            lon REAL,
+            restaurant_id INTEGER,
+            verification_token TEXT
+        )""")
+        await db.commit()
+
 @dataclass
-class Actions:
-    BUYER = "buyer"
-    RESTO = "resto"
-    OFFERS = "offers"
-    RESERVE = "reserve"
-    HELP = "help"
+class RestRec:
+    tg_id: int
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    restaurant_id: Optional[int] = None
+    verification_token: Optional[str] = None
 
-router = Router()
+async def get_rest(tg_id: int) -> Optional[RestRec]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM restaurants WHERE tg_id=?", (tg_id,))
+        row = await cur.fetchone()
+        if not row: return None
+        return RestRec(**row)
 
-# ========= Клавиатуры =========
-def start_kb() -> InlineKeyboardMarkup:
+async def upsert_rest(rec: RestRec):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""INSERT INTO restaurants (tg_id, name, lat, lon, restaurant_id, verification_token)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(tg_id) DO UPDATE SET
+                              name=excluded.name,
+                              lat=excluded.lat,
+                              lon=excluded.lon,
+                              restaurant_id=excluded.restaurant_id,
+                              verification_token=excluded.verification_token
+                         """,
+                         (rec.tg_id, rec.name, rec.lat, rec.lon, rec.restaurant_id, rec.verification_token))
+        await db.commit()
+
+def placeholder_email(tg_id: int) -> str:
+    return f"tg_{tg_id}@example.com"
+
+class AddRest(StatesGroup):
+    waiting_name = State()
+    waiting_location = State()
+
+bot = Bot(BOT_TOKEN, parse_mode="HTML")
+dp = Dispatcher()
+
+def choose_role_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🛒 Я покупатель", callback_data=Actions.BUYER)
-    kb.button(text="🏪 Я ресторан", callback_data=Actions.RESTO)
-    kb.adjust(1)
-    return kb.as_markup()
-
-def buyer_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🍽 Открыть каталог (WebApp)", url=WEBAPP_BUYER)
-    kb.button(text="🔄 Показать предложения", callback_data=Actions.OFFERS)
-    kb.button(text="ℹ️ Помощь", callback_data=Actions.HELP)
-    kb.adjust(1, 1, 1)
-    return kb.as_markup()
-
-def resto_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🧑‍🍳 Открыть ЛК ресторана (WebApp)", url=WEBAPP_REG)
-    kb.button(text="ℹ️ Помощь", callback_data=Actions.HELP)
+    kb.button(text="🏪 Ресторан / кафе", callback_data="role|rest")
+    kb.button(text="👤 Покупатель", callback_data="role|buyer")
     kb.adjust(1, 1)
     return kb.as_markup()
 
-def offer_kb(offer_id: int) -> InlineKeyboardMarkup:
+def lk_button(verification_link: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="📦 Забронировать", callback_data=f"{Actions.RESERVE}:{offer_id}")
+    kb.button(text="🔐 Открыть ЛК ресторана", url=verification_link)
     kb.adjust(1)
     return kb.as_markup()
 
-# ========= API-вспомогалки =========
-async def get_offers(session: aiohttp.ClientSession):
-    url = f"{BACKEND_API}/offers"
-    async with session.get(url, timeout=20) as r:
-        r.raise_for_status()
-        return await r.json()
+def open_catalog_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    buyer_url = WEBAPP_URL.replace("foody-reg", "foody-buyer")
+    kb.button(text="🍔 Открыть каталог", url=f"{buyer_url}?api={BACKEND_PUBLIC}")
+    kb.adjust(1)
+    return kb.as_markup()
 
-async def reserve_offer(session: aiohttp.ClientSession, offer_id: int, buyer_name: Optional[str]):
-    url = f"{BACKEND_API}/reserve"
-    payload = {"offer_id": offer_id, "buyer_name": buyer_name}
-    async with session.post(url, json=payload, timeout=20) as r:
-        r.raise_for_status()
-        return await r.json()
+@dp.message(CommandStart())
+async def start_cmd(m: Message, state: FSMContext):
+    await state.clear()
+    txt = ("🍽 <b>Foody — вкусно, выгодно, без отходов.</b>\n"
+           "Выберите, кто вы:")
+    await m.answer(txt, reply_markup=choose_role_kb())
 
-# ========= Хендлеры =========
-@router.message(CommandStart())
-async def on_start(m: Message):
-    text = (
-        "🍽 Привет! Это Foody — вкусно, выгодно, без отходов.\n\n"
-        "Кем вы являетесь?"
-    )
-    await m.answer(text, reply_markup=start_kb())
+@dp.callback_query(F.data.startswith("role|"))
+async def role_pick(c: CallbackQuery, state: FSMContext):
+    role = c.data.split("|",1)[1]
+    if role == "rest":
+        rec = await get_rest(c.from_user.id)
+        if rec and rec.verification_token:
+            link = f"{WEBAPP_URL}/verify.html?token={rec.verification_token}&api={BACKEND_PUBLIC}"
+            await c.message.edit_text("🏪 Аккаунт найден. Можно открыть ЛК:", reply_markup=lk_button(link))
+            await c.answer()
+            return
+        await state.set_state(AddRest.waiting_name)
+        await c.message.edit_text("🏪 Введите <b>название заведения</b> (например: «Кофейня №1»):")
+        await c.answer()
+    else:
+        await c.message.edit_text("👤 Режим покупателя: откройте каталог — он покажет предложения рядом.", reply_markup=open_catalog_kb())
+        await c.answer()
 
-@router.callback_query(F.data == Actions.BUYER)
-async def on_buyer(c: CallbackQuery):
-    await c.message.edit_text(
-        "👤 Режим покупателя.\n"
-        "— смотрите еду со скидкой рядом\n"
-        "— бронируйте за пару кликов\n\n"
-        "Выберите действие:",
-        reply_markup=buyer_kb()
-    )
-    await c.answer()
+@dp.message(AddRest.waiting_name)
+async def enter_name(m: Message, state: FSMContext):
+    name = (m.text or "").strip()
+    if len(name) < 2:
+        await m.reply("Название слишком короткое. Введите корректно:")
+        return
+    await state.update_data(name=name)
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📍 Отправить геопозицию", request_location=True)]],
+                             resize_keyboard=True, one_time_keyboard=True)
+    await state.set_state(AddRest.waiting_location)
+    await m.answer("Теперь отправьте локацию заведения (кнопкой ниже).", reply_markup=kb)
 
-@router.callback_query(F.data == Actions.RESTO)
-async def on_resto(c: CallbackQuery):
-    await c.message.edit_text(
-        "🏪 Режим ресторана.\n"
-        "Откройте ЛК, чтобы добавить или отредактировать предложения.",
-        reply_markup=resto_kb()
-    )
-    await c.answer()
+@dp.message(AddRest.waiting_location, F.location)
+async def got_location(m: Message, state: FSMContext):
+    data = await state.get_data()
+    name = data.get("name")
+    loc: Location = m.location
+    lat, lon = loc.latitude, loc.longitude
 
-@router.callback_query(F.data == Actions.HELP)
-async def on_help(c: CallbackQuery):
-    await c.message.answer(
-        "ℹ️ Как это работает:\n"
-        "• Ресторан публикует излишки в ЛК (WebApp)\n"
-        "• Покупатель находит и бронирует\n"
-        "• На выдаче показывает код/бронь\n\n"
-        "Открыть каталог: " + WEBAPP_BUYER + "\n"
-        "ЛК ресторана: " + WEBAPP_REG
-    )
-    await c.answer()
-
-@router.callback_query(F.data == Actions.OFFERS)
-async def on_offers(c: CallbackQuery, bot: Bot):
-    await c.answer("Загружаю предложения…")
-    async with aiohttp.ClientSession() as session:
+    email = placeholder_email(m.from_user.id)
+    async with ClientSession() as sess:
         try:
-            items = await get_offers(session)
-        except Exception as e:
-            await c.message.answer("⚠️ Не удалось получить предложения. Попробуйте позже.")
+            async with sess.post(f"{BACKEND_PUBLIC}/register_restaurant", params={"name": name, "email": email}) as resp:
+                js = await resp.json()
+        except Exception:
+            await m.answer("Ошибка связи с сервером. Попробуйте ещё раз позже.", reply_markup=ReplyKeyboardRemove())
+            await state.clear()
             return
 
-    if not items:
-        await c.message.answer("Пока предложений нет. Загляните позже или откройте WebApp: " + WEBAPP_BUYER)
+    verification_link = js.get("verification_link")
+    restaurant_id = js.get("restaurant_id")
+
+    if not verification_link or not restaurant_id:
+        await m.answer("Не удалось зарегистрировать. Напишите нам, мы поможем.", reply_markup=ReplyKeyboardRemove())
+        await state.clear()
         return
 
-    # Первые 5 карточек
-    for o in items[:5]:
-        title = o.get("title", "Без названия")
-        restaurant = o.get("restaurant", "Ресторан")
-        price = o.get("price", 0)
-        qty = o.get("quantity", 0)
-        photo = o.get("photo_url")
-        expires = o.get("expires_at", "")
+    import urllib.parse as up
+    q = up.urlparse(verification_link).query
+    token = up.parse_qs(q).get("token", [None])[0] or verification_link.split("token=")[-1].split("&")[0]
 
-        caption = (
-            f"🍔 <b>{title}</b>\n"
-            f"🏷 {restaurant}\n"
-            f"💰 {price} ₽   •   🧾 Остаток: {qty}\n"
-        )
-        kb = offer_kb(o["id"])
-        try:
-            if photo:
-                await bot.send_photo(
-                    chat_id=c.message.chat.id,
-                    photo=photo,
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=kb
-                )
-            else:
-                await bot.send_message(
-                    chat_id=c.message.chat.id,
-                    text=caption,
-                    parse_mode="HTML",
-                    reply_markup=kb
-                )
-        except Exception:
-            # если URL фото недоступен — просто текст
-            await bot.send_message(
-                chat_id=c.message.chat.id,
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
+    rec = RestRec(tg_id=m.from_user.id, name=name, lat=lat, lon=lon, restaurant_id=restaurant_id, verification_token=token)
+    await upsert_rest(rec)
 
-@router.callback_query(F.data.startswith(f"{Actions.RESERVE}:"))
-async def on_reserve(c: CallbackQuery):
-    _, offer_id_str = c.data.split(":")
-    offer_id = int(offer_id_str)
-    buyer_name = c.from_user.full_name
+    await m.answer("✅ Регистрация завершена! Откройте ЛК ресторана для управления предложениями.",
+                   reply_markup=ReplyKeyboardRemove())
+    await m.answer("Открыть ЛК:", reply_markup=lk_button(verification_link))
+    await state.clear()
 
-    async with aiohttp.ClientSession() as session:
-        try:
-            data = await reserve_offer(session, offer_id, buyer_name)
-        except Exception:
-            await c.answer("Не удалось забронировать", show_alert=True)
-            return
+@dp.message(AddRest.waiting_location)
+async def location_required(m: Message, state: FSMContext):
+    await m.reply("Пожалуйста, отправьте локацию кнопкой «📍 Отправить геопозицию».")
 
-    code = data.get("code")
-    until = data.get("expires_at", "")
-    title = data.get("title", "")
-    price = data.get("price", 0)
-    restaurant = data.get("restaurant", "")
-
-    text = (
-        "✅ Бронь оформлена!\n\n"
-        f"🍽 <b>{title}</b>\n"
-        f"🏪 {restaurant}\n"
-        f"💰 {price} ₽\n"
-        f"🔐 Код брони: <code>{code}</code>\n"
-        f"⏳ Действует до: {until}\n\n"
-        "Покажите этот код на выдаче."
-    )
-    await c.message.answer(text, parse_mode="HTML")
-    await c.answer()
-
-# ========= Запуск =========
 async def main():
-    bot = Bot(BOT_TOKEN, parse_mode="HTML")
-    dp = Dispatcher()
-    dp.include_router(router)
+    await init_db()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
