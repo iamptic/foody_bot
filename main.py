@@ -4,8 +4,8 @@ from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com")
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com")  # webapp URL
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")  # backend public URL
 
 if not BOT_TOKEN:
     raise SystemExit("❌ BOT_TOKEN is not set")
@@ -29,7 +29,12 @@ async def cb_reg(call: CallbackQuery):
         r = requests.post(f"{BACKEND_URL}/register_restaurant", params={"name": name, "email": email}, timeout=15)
         if r.status_code == 200:
             data = r.json()
-            await call.message.answer(f"Ресторан зарегистрирован ✅\nСсылка для активации: {data['verification_link']}\nID: {data['restaurant_id']}")
+            link = data["verification_link"]
+            # Safety: if backend didn't append &api, add it here
+            if "api=" not in link and BACKEND_URL:
+                sep = "&" if "?" in link else "?"
+                link = f"{link}{sep}api={BACKEND_URL}"
+            await call.message.answer(f"Ресторан зарегистрирован ✅\nСсылка для активации: {link}\nID: {data['restaurant_id']}")
         else:
             await call.message.answer(f"Ошибка регистрации: {r.text}")
     except Exception as e:
