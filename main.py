@@ -47,8 +47,11 @@ class RegForm(StatesGroup):
 
 @dp.message(CommandStart())
 async def on_start(message: Message):
-    await message.answer("🍽 <b>Foody</b> — вкусно, выгодно, без отходов.
-Выберите, кто вы:", reply_markup=start_kb())
+    await message.answer(
+        "🍽 <b>Foody</b> — вкусно, выгодно, без отходов.\n"
+        "Выберите, кто вы:",
+        reply_markup=start_kb()
+    )
 
 @dp.callback_query(F.data == "role_restaurant")
 async def role_restaurant(c: CallbackQuery):
