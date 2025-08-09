@@ -2,7 +2,11 @@ import os
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    WebAppInfo,
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -24,22 +28,34 @@ class Reg(StatesGroup):
     waiting_email = State()
 
 def main_menu():
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🍽 Открыть предложения рядом", url=f"{BUYER_WEBAPP_URL}/index.html?api={BACKEND_URL}"),
-    ],[
-        InlineKeyboardButton(text="👨‍🍳 Открыть ЛК ресторана (есть аккаунт)", url=f"{REG_WEBAPP_URL}/index.html?api={BACKEND_URL}")
-    ],[
-        InlineKeyboardButton(text="🧾 Регистрация ресторана", callback_data="reg_start")
-    ]])
-    return kb
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🍽 Открыть предложения рядом",
+                web_app=WebAppInfo(url=f"{BUYER_WEBAPP_URL}/index.html?api={BACKEND_URL}")
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="👨‍🍳 Открыть ЛК ресторана (есть аккаунт)",
+                web_app=WebAppInfo(url=f"{REG_WEBAPP_URL}/index.html?api={BACKEND_URL}")
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🧾 Регистрация ресторана",
+                callback_data="reg_start"
+            )
+        ],
+    ])
 
 @dp.message(CommandStart())
 async def start(m: Message, state: FSMContext):
     await state.clear()
     await m.answer(
         "Добро пожаловать в <b>Foody</b>!\n"
-        "— Покупателю: смотрите горячие предложения рядом.\n"
-        "— Ресторану: зарегистрируйтесь и управляйте остатками.\n\n"
+        "— Покупателю: смотрите горячие предложения рядом (Mini App).\n"
+        "— Ресторану: зарегистрируйтесь и управляйте остатками (Mini App).\n\n"
         "Выберите действие:",
         reply_markup=main_menu()
     )
@@ -76,7 +92,7 @@ async def reg_email(m: Message, state: FSMContext):
         rid = resp.get("restaurant_id")
         if link:
             await m.answer(
-                f"✅ Готово!\nАктивируйте аккаунт по ссылке ниже, затем попадёте в ЛК:\n{link}\n\n"
+                f"✅ Готово!\nАктивируйте аккаунт по ссылке ниже, затем откройте ЛК кнопкой выше:\n{link}\n\n"
                 f"ID ресторана: <code>{rid}</code>"
             )
         else:
