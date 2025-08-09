@@ -1,77 +1,67 @@
-import os, asyncio, json, requests
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+import os, asyncio, httpx
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+REG_WEBAPP_URL = os.getenv("REG_WEBAPP_URL", "http://localhost:5173")
+BUYER_WEBAPP_URL = os.getenv("BUYER_WEBAPP_URL", "http://localhost:5174")
+if not BOT_TOKEN: raise RuntimeError("❌ BOT_TOKEN is not set")
 
-if not BOT_TOKEN:
-    raise SystemExit("❌ BOT_TOKEN is not set")
+dp = Dispatcher(storage=MemoryStorage())
+bot = Bot(BOT_TOKEN, parse_mode="HTML")
 
-bot = Bot(BOT_TOKEN)
-dp = Dispatcher()
+class Reg(StatesGroup):
+    waiting_name = State()
+    waiting_email = State()
 
-def demo_identity(user: types.User):
-    name = f"Ресторан {user.first_name or user.id}"
-    email = f"rest_{user.id}@example.com"
-    return name, email
+def kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🍽 Открыть предложения рядом", url=f"{BUYER_WEBAPP_URL}/index.html?api={BACKEND_URL}")],
+        [InlineKeyboardButton(text="👨‍🍳 Открыть ЛК ресторана (есть аккаунт)", url=f"{REG_WEBAPP_URL}/index.html?api={BACKEND_URL}")],
+        [InlineKeyboardButton(text="🧾 Регистрация ресторана", callback_data="reg_start")]
+    ])
 
-def fetch_verification_link(name: str, email: str) -> str | None:
+@dp.message(CommandStart())
+async def start(m: Message, state: FSMContext):
+    await state.clear()
+    await m.answer("Добро пожаловать в <b>Foody</b>! Выберите действие:", reply_markup=kb())
+
+@dp.callback_query(F.data == "reg_start")
+async def reg_start(cb, state: FSMContext):
+    await cb.message.answer("Введите <b>название ресторана</b>:")
+    await state.set_state(Reg.waiting_name); await cb.answer()
+
+@dp.message(Reg.waiting_name)
+async def reg_name(m: Message, state: FSMContext):
+    name = (m.text or "").strip()
+    if not name: return await m.answer("Название не распознано. Попробуйте ещё раз.")
+    await state.update_data(name=name); await state.set_state(Reg.waiting_email)
+    await m.answer("Отлично. Теперь укажите <b>email</b> для активации:")
+
+@dp.message(Reg.waiting_email)
+async def reg_email(m: Message, state: FSMContext):
+    email = (m.text or "").strip()
+    if "@" not in email or "." not in email: return await m.answer("Похоже не email. Введите корректный адрес.")
+    data = await state.get_data(); name = data["name"]
+    await m.answer("Регистрируем…")
     try:
-        r = requests.post(
-            f"{BACKEND_URL}/register_restaurant",
-            params={"name": name, "email": email},
-            timeout=10,
-        )
-        if r.ok:
-            data = r.json()
-            return data.get("verification_link")
-        return None
-    except Exception:
-        return None
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(f"{BACKEND_URL}/register_restaurant", params={"name": name, "email": email})
+            r.raise_for_status(); resp = r.json()
+        link = resp.get("verification_link"); rid = resp.get("restaurant_id")
+        if link: await m.answer(f"✅ Готово!\nСсылка активации:\n{link}\n\nID ресторана: <code>{rid}</code>")
+        else: await m.answer(f"Ошибка: {resp}")
+    except Exception as e:
+        await m.answer(f"Ошибка регистрации: {e}")
+    await state.clear()
 
-@dp.message(Command("start"))
-async def start_cmd(m: Message):
-    name, email = demo_identity(m.from_user)
-    lk_url = fetch_verification_link(name, email)
+@dp.message(Command("menu"))
+async def menu(m: Message): await m.answer("Меню:", reply_markup=kb())
 
-    if not lk_url:
-        await m.answer(
-            "Не удалось получить ссылку для входа в ЛК 🤖\n"
-            "Проверьте, что BACKEND_URL у бота указывает на рабочий API и backend возвращает verification_link."
-        )
-        return
-
-    ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть ЛК ресторана", web_app=WebAppInfo(url=lk_url))],
-        [InlineKeyboardButton(text="Регистрация (demo)", callback_data="reg_demo")]
-    ])
-    await m.answer("Добро пожаловать! Нажмите, чтобы открыть ЛК или зарегистрироваться.", reply_markup=ikb)
-
-@dp.callback_query(F.data == "reg_demo")
-async def cb_reg(call: types.CallbackQuery):
-    name, email = demo_identity(call.from_user)
-    lk_url = fetch_verification_link(name, email)
-
-    if not lk_url:
-        await call.message.answer("Ошибка: backend не вернул verification_link. Проверьте BACKEND_URL и переменные бэкенда.")
-        await call.answer()
-        return
-
-    ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть ЛК ресторана", web_app=WebAppInfo(url=lk_url))]
-    ])
-    await call.message.answer("Ресторан зарегистрирован ✅\nОткройте ЛК:", reply_markup=ikb)
-    await call.answer()
-
-@dp.message(F.web_app_data)
-async def on_webapp_data(m: Message):
-    payload = json.loads(m.web_app_data.data)
-    await m.answer(f"Из ЛК получено: {payload}")
-
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+async def main(): await dp.start_polling(bot)
+if __name__ == "__main__": asyncio.run(main())
