@@ -1,11 +1,11 @@
 import os, asyncio, json, requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com")  # webapp URL
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")  # backend public URL
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 if not BOT_TOKEN:
     raise SystemExit("❌ BOT_TOKEN is not set")
@@ -22,19 +22,15 @@ async def start_cmd(m: Message):
     await m.answer("Добро пожаловать! Нажмите, чтобы открыть ЛК или зарегистрироваться.", reply_markup=ikb)
 
 @dp.callback_query(F.data == "reg_demo")
-async def cb_reg(call: CallbackQuery):
+async def cb_reg(call):
+    # Демо-регистрация через backend
     name = f"Ресторан {call.from_user.first_name or call.from_user.id}"
     email = f"rest_{call.from_user.id}@example.com"
     try:
-        r = requests.post(f"{BACKEND_URL}/register_restaurant", params={"name": name, "email": email}, timeout=15)
+        r = requests.post(f"{BACKEND_URL}/register_restaurant", params={"name": name, "email": email}, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            link = data["verification_link"]
-            # Safety: if backend didn't append &api, add it here
-            if "api=" not in link and BACKEND_URL:
-                sep = "&" if "?" in link else "?"
-                link = f"{link}{sep}api={BACKEND_URL}"
-            await call.message.answer(f"Ресторан зарегистрирован ✅\nСсылка для активации: {link}\nID: {data['restaurant_id']}")
+            await call.message.answer(f"Ресторан зарегистрирован ✅\nСсылка для активации: {data['verification_link']}\nID: {data['restaurant_id']}")
         else:
             await call.message.answer(f"Ошибка регистрации: {r.text}")
     except Exception as e:
