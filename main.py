@@ -16,11 +16,12 @@ dp = Dispatcher(storage=MemoryStorage())
 bot = Bot(BOT_TOKEN, parse_mode="HTML")
 
 class Reg(StatesGroup):
-    waiting_name = State()
     waiting_name_new = State()
 
-class LinkFSM(StatesGroup):
-    waiting_restaurant_id = State()
+def buyer_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🍽 Открыть предложения рядом", web_app=WebAppInfo(url=f"{BUYER_WEBAPP_URL}/index.html?api={BACKEND_URL}"))
+    ]])
 
 def merchant_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -34,14 +35,8 @@ def settings_menu():
         [InlineKeyboardButton(text="➕ Создать новый ресторан", callback_data="create_new_rest")],
         [InlineKeyboardButton(text="🔀 Сменить активный ресторан", callback_data="switch_rest")],
         [InlineKeyboardButton(text="✏️ Заполнить профиль (Mini App)", web_app=WebAppInfo(url=f"{REG_WEBAPP_URL}/onboarding.html?api={BACKEND_URL}"))],
-        [InlineKeyboardButton(text="🔗 Привязать Telegram к ЛК", callback_data="link_tg")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
-
-def buyer_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🍽 Открыть предложения рядом", web_app=WebAppInfo(url=f"{BUYER_WEBAPP_URL}/index.html?api={BACKEND_URL}"))
-    ]])
 
 @dp.message(CommandStart())
 async def start(m: Message, state: FSMContext):
@@ -90,9 +85,7 @@ async def reg_name_new(m: Message, state: FSMContext):
                                   json={"name": name, "telegram_id": str(m.from_user.id)})
             r.raise_for_status()
             data = r.json()
-        await m.answer(
-            f"✅ Создан «{data['restaurant_name']}» (id {data['restaurant_id']}).\n"
-            f"Он выбран активным. Откройте «👨‍🍳 ЛК ресторана».")
+        await m.answer(f"✅ Создан «{data['restaurant_name']}» (id {data['restaurant_id']}). Он выбран активным. Откройте «👨‍🍳 ЛК ресторана».")
     except Exception as e:
         await m.answer(f"Ошибка: {e}")
     await state.clear()
@@ -110,10 +103,7 @@ async def switch_rest(cb: CallbackQuery):
         await cb.message.answer("У вас пока нет ресторанов. Создайте новый в настройках.")
         return await cb.answer()
 
-    # Пагинация не нужна для 3–10 шт. Сделаем простые кнопки.
-    rows = []
-    for x in lst:
-        rows.append([InlineKeyboardButton(text=f"🍽 {x['restaurant_name']} (id {x['id']})", callback_data=f"pick_rest:{x['id']}")])
+    rows = [[InlineKeyboardButton(text=f"🍽 {x['restaurant_name']} (id {x['id']})", callback_data=f"pick_rest:{x['id']}")] for x in lst]
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await cb.message.answer("Выберите активный ресторан:", reply_markup=kb)
@@ -133,37 +123,6 @@ async def pick_rest(cb: CallbackQuery):
     except Exception as e:
         await cb.message.answer(f"Ошибка: {e}")
     await cb.answer()
-
-class LinkFSM(StatesGroup):
-    waiting_restaurant_id = State()
-
-@dp.callback_query(F.data == "link_tg")
-async def link_tg(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введите <b>ID ресторана</b>, к которому хотите привязать этот Telegram:")
-    await state.set_state(LinkFSM.waiting_restaurant_id)
-    await cb.answer()
-
-@dp.message(LinkFSM.waiting_restaurant_id)
-async def do_link(m: Message, state: FSMContext):
-    rid_raw = (m.text or "").strip()
-    if not rid_raw.isdigit():
-        return await m.answer("Нужен числовой ID.")
-    rid = int(rid_raw)
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(f"{BACKEND_URL}/set_active_restaurant",
-                                  params={"telegram_id": m.from_user.id, "restaurant_id": rid})
-        if r.status_code == 200:
-            await m.answer(f"✅ Привязка активна. Выбран ресторан id {rid}. Откройте «👨‍🍳 ЛК ресторана».")
-        else:
-            await m.answer("Не удалось привязать.")
-    except Exception as e:
-        await m.answer(f"Ошибка: {e}")
-    await state.clear()
-
-@dp.message(Command("menu"))
-async def menu(m: Message):
-    await m.answer("Меню:", reply_markup=buyer_menu())
 
 async def main():
     await dp.start_polling(bot)
