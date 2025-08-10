@@ -25,7 +25,7 @@ bot = Bot(BOT_TOKEN, parse_mode="HTML")
 
 class Reg(StatesGroup):
     waiting_name = State()
-    waiting_email = State()
+    waiting_address = State()
 
 class LinkFSM(StatesGroup):
     waiting_restaurant_id = State()
@@ -62,28 +62,33 @@ async def reg_name(m: Message, state: FSMContext):
     if not name:
         return await m.answer("Название не распознано. Попробуйте ещё раз.")
     await state.update_data(name=name)
-    await state.set_state(Reg.waiting_email)
-    await m.answer("Отлично. Теперь укажите <b>email</b> для активации:")
+    await state.set_state(Reg.waiting_address)
+    await m.answer("Теперь укажите <b>адрес ресторана</b> (улица, дом; можно с ориентиром):")
 
-@dp.message(Reg.waiting_email)
-async def reg_email(m: Message, state: FSMContext):
-    email = (m.text or "").strip()
-    if "@" not in email or "." not in email:
-        return await m.answer("Похоже не email. Введите корректный адрес.")
+@dp.message(Reg.waiting_address)
+async def reg_address(m: Message, state: FSMContext):
+    address = (m.text or "").strip()
+    if not address:
+        return await m.answer("Адрес пустой. Введите адрес ещё раз.")
     data = await state.get_data()
     name = data["name"]
     await m.answer("Регистрируем…")
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(f"{BACKEND_URL}/register_restaurant", params={"name": name, "email": email})
+            r = await client.post(
+                f"{BACKEND_URL}/register_restaurant",
+                params={"name": name, "address": address}
+            )
             r.raise_for_status()
             resp = r.json()
         link = resp.get("verification_link")
         rid = resp.get("restaurant_id")
         if link:
             await m.answer(
-                f"✅ Готово!\nАктивируйте аккаунт по ссылке ниже, затем откройте ЛК кнопкой выше:\n{link}\n\n"
-                f"ID ресторана: <code>{rid}</code>"
+                f"✅ Готово!\n"
+                f"Активируйте аккаунт по ссылке ниже, затем откройте ЛК кнопкой выше:\n{link}\n\n"
+                f"ID ресторана: <code>{rid}</code>\n"
+                f"Название: {name}\nАдрес: {address}"
             )
         else:
             await m.answer(f"Что-то пошло не так: {resp}")
