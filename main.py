@@ -21,7 +21,6 @@ bot = Bot(BOT_TOKEN, parse_mode="HTML")
 
 class Reg(StatesGroup):
     waiting_name = State()
-    waiting_email = State()
 
 class LinkFSM(StatesGroup):
     waiting_restaurant_id = State()
@@ -42,7 +41,8 @@ def restaurant_menu():
                 web_app=WebAppInfo(url=f"{REG_WEBAPP_URL}/index.html?api={BACKEND_URL}")
             )
         ],
-        [InlineKeyboardButton(text="🧾 Регистрация ресторана", callback_data="reg_start")],
+        [InlineKeyboardButton(text="🧾 Зарегистрировать ресторан (1 шаг)", callback_data="reg_start")],
+        [InlineKeyboardButton(text="✏️ Заполнить профиль", web_app=WebAppInfo(url=f"{REG_WEBAPP_URL}/onboarding.html?api={BACKEND_URL}"))],
         [InlineKeyboardButton(text="🔗 Привязать этот Telegram к ЛК", callback_data="link_tg")],
         [
             InlineKeyboardButton(
@@ -63,7 +63,7 @@ async def start(m: Message, state: FSMContext):
         if r.status_code == 200:
             data = r.json()
             kb = restaurant_menu()
-            intro = f"Здравствуйте, <b>{data.get('restaurant_name','ресторан')}</b>!\nОткройте ЛК, управляйте предложениями, привязка уже активна."
+            intro = f"Здравствуйте, <b>{data.get('restaurant_name','ресторан')}</b>!\nОткройте ЛК, управляйте предложениями, привязка активна."
     except Exception:
         pass
     await m.answer(intro, reply_markup=kb)
@@ -74,7 +74,7 @@ async def merchant(m: Message):
 
 @dp.callback_query(F.data == "reg_start")
 async def reg_start(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введите <b>название ресторана</b>:")
+    await cb.message.answer("Введите <b>название ресторана</b> (до 120 символов):")
     await state.set_state(Reg.waiting_name)
     await cb.answer()
 
@@ -83,29 +83,17 @@ async def reg_name(m: Message, state: FSMContext):
     name = (m.text or "").strip()
     if not name:
         return await m.answer("Название не распознано. Попробуйте ещё раз.")
-    await state.update_data(name=name)
-    await state.set_state(Reg.waiting_email)
-    await m.answer("Отлично. Теперь укажите <b>email</b> для активации:")
-
-@dp.message(Reg.waiting_email)
-async def reg_email(m: Message, state: FSMContext):
-    email = (m.text or "").strip()
-    if "@" not in email or "." not in email:
-        return await m.answer("Похоже не email. Введите корректный адрес.")
-    data = await state.get_data()
-    name = data["name"]
-    await m.answer("Регистрируем…")
+    await m.answer("Создаём аккаунт…")
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(f"{BACKEND_URL}/register_restaurant", params={"name": name, "email": email})
+            r = await client.post(f"{BACKEND_URL}/register_telegram",
+                                  json={"name": name[:120], "telegram_id": str(m.from_user.id)})
             r.raise_for_status()
-            resp = r.json()
-        link = resp.get("verification_link")
-        rid = resp.get("restaurant_id")
-        if link:
-            await m.answer(f"✅ Готово!\nАктивируйте аккаунт по ссылке ниже, затем откройте ЛК кнопкой /merchant:\n{link}\n\nID ресторана: <code>{rid}</code>")
-        else:
-            await m.answer(f"Что-то пошло не так: {resp}")
+            data = r.json()
+        await m.answer(
+            f"✅ Готово! Ресторан «{data['restaurant_name']}» (id {data['restaurant_id']}) создан и привязан.\n"
+            f"Откройте ЛК и заполните профиль: /merchant → «✏️ Заполнить профиль»."
+        )
     except Exception as e:
         await m.answer(f"Ошибка регистрации: {e}")
     await state.clear()
