@@ -2,7 +2,11 @@ import os
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    WebAppInfo,
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -33,44 +37,61 @@ def buyer_menu():
         )
     ]])
 
-def restaurant_menu():
+def merchant_menu():
+    # Minimalist: LK, Buyer, Settings
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
-                text="👨‍🍳 Открыть ЛК ресторана",
+                text="👨‍🍳 ЛК ресторана",
                 web_app=WebAppInfo(url=f"{REG_WEBAPP_URL}/index.html?api={BACKEND_URL}")
             )
         ],
-        [InlineKeyboardButton(text="🧾 Зарегистрировать ресторан (1 шаг)", callback_data="reg_start")],
-        [InlineKeyboardButton(text="✏️ Заполнить профиль", web_app=WebAppInfo(url=f"{REG_WEBAPP_URL}/onboarding.html?api={BACKEND_URL}"))],
-        [InlineKeyboardButton(text="🔗 Привязать этот Telegram к ЛК", callback_data="link_tg")],
         [
             InlineKeyboardButton(
-                text="🍽 Перейти к экрану покупателя",
+                text="🍽 Экран покупателя",
                 web_app=WebAppInfo(url=f"{BUYER_WEBAPP_URL}/index.html?api={BACKEND_URL}")
             )
         ],
+        [InlineKeyboardButton(text="⚙️ Настройки ресторана", callback_data="settings_open")],
+    ])
+
+def settings_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧾 Зарегистрировать ресторан (1 шаг)", callback_data="reg_start")],
+        [InlineKeyboardButton(text="✏️ Заполнить профиль (Mini App)", web_app=WebAppInfo(url=f"{REG_WEBAPP_URL}/onboarding.html?api={BACKEND_URL}"))],
+        [InlineKeyboardButton(text="🔗 Привязать Telegram к ЛК", callback_data="link_tg")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
 
 @dp.message(CommandStart())
 async def start(m: Message, state: FSMContext):
     await state.clear()
     kb = buyer_menu()
-    intro = "Добро пожаловать в <b>Foody</b>!\nЗдесь вы можете смотреть горячие предложения рядом."
+    intro = "Добро пожаловать в <b>Foody</b>!\nСмотрите горячие предложения рядом."
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(f"{BACKEND_URL}/whoami", params={"telegram_id": m.from_user.id})
         if r.status_code == 200:
             data = r.json()
-            kb = restaurant_menu()
-            intro = f"Здравствуйте, <b>{data.get('restaurant_name','ресторан')}</b>!\nОткройте ЛК, управляйте предложениями, привязка активна."
+            kb = merchant_menu()
+            intro = f"Здравствуйте, <b>{data.get('restaurant_name','ресторан')}</b>!\nУправляйте меню и бронями."
     except Exception:
         pass
     await m.answer(intro, reply_markup=kb)
 
 @dp.message(Command("merchant"))
 async def merchant(m: Message):
-    await m.answer("Раздел для ресторанов:", reply_markup=restaurant_menu())
+    await m.answer("Раздел для ресторанов:", reply_markup=merchant_menu())
+
+@dp.callback_query(F.data == "settings_open")
+async def settings_open(cb: CallbackQuery):
+    await cb.message.edit_text("⚙️ Настройки ресторана:", reply_markup=settings_menu())
+    await cb.answer()
+
+@dp.callback_query(F.data == "back_main")
+async def back_main(cb: CallbackQuery):
+    await cb.message.edit_text("Меню ресторана:", reply_markup=merchant_menu())
+    await cb.answer()
 
 @dp.callback_query(F.data == "reg_start")
 async def reg_start(cb: CallbackQuery, state: FSMContext):
@@ -92,8 +113,7 @@ async def reg_name(m: Message, state: FSMContext):
             data = r.json()
         await m.answer(
             f"✅ Готово! Ресторан «{data['restaurant_name']}» (id {data['restaurant_id']}) создан и привязан.\n"
-            f"Откройте ЛК и заполните профиль: /merchant → «✏️ Заполнить профиль»."
-        )
+            f"Откройте «👨‍🍳 ЛК ресторана» или заполните профиль в «⚙️ Настройки ресторана».")
     except Exception as e:
         await m.answer(f"Ошибка регистрации: {e}")
     await state.clear()
@@ -117,7 +137,7 @@ async def do_link(m: Message, state: FSMContext):
             r = await client.post(f"{BACKEND_URL}/link_telegram", json={"telegram_id": tg_id, "restaurant_id": rid})
             resp = r.json()
         if r.status_code == 200:
-            await m.answer(f"✅ Готово. Привязано к «{resp.get('restaurant_name','')}» (id {resp.get('restaurant_id')}).\nОткройте /merchant для ЛК.")
+            await m.answer(f"✅ Готово. Привязано к «{resp.get('restaurant_name','')}» (id {resp.get('restaurant_id')}).\nОткройте меню: /merchant")
         else:
             await m.answer(f"Не удалось привязать: {resp}")
     except Exception as e:
