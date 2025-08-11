@@ -3,6 +3,8 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart, Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from extras_commands import router as extras_router
+dp.include_router(extras_router)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBAPP_MERCHANT = os.getenv("WEBAPP_MERCHANT_URL", "https://foody-reg.vercel.app")
