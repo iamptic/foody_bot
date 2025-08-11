@@ -2,7 +2,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # кэш-бамп
-ARG CACHE_BUST=2025-08-11-6
+ARG CACHE_BUST=2025-08-11-8
 
 # корневые сертификаты для HTTPS к Telegram
 RUN apt-get update \
