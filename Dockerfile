@@ -2,7 +2,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # сбиваем кэш перед установкой зависимостей
-ARG CACHE_BUST=2025-08-11-11
+ARG CACHE_BUST=2025-08-11-12
 
 # сертификаты для HTTPS к Telegram
 RUN apt-get update \
