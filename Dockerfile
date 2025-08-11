@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-CMD ["python", "bot_webhook_fixed.py"]
+CMD ["python", "bot_webhook_final.py"]
