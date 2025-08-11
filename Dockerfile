@@ -2,7 +2,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # сбиваем кэш перед установкой зависимостей
-ARG CACHE_BUST=2025-08-11-92
+ARG CACHE_BUST=2025-08-11-94
 
 # сертификаты для HTTPS к Telegram
 RUN apt-get update \
@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-CMD ["python", "bot_webhook_final_url_with_uid.py"]
+CMD ["python", "bot_webhook_miniapp.py"]
