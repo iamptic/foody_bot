@@ -25,7 +25,7 @@ def buttons():
 @dp.message(CommandStart())
 async def start(m: Message):
     await m.answer(
-        "Foody — вкусно, выгодно, без отходов.\nВыберите, чем хотите заняться:",
+        "Foody — вкусно, выгодно, всем!.\nВыберите, чем хотите заняться:",
         reply_markup=buttons()
     )
 
